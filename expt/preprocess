@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import pickle
+import yaml
+
+
+class YAMLData:
+    """
+    Interface to a YAML data file.
+
+    """
+    def __init__(self, basename):
+        self._cent = None
+        with open('{}.yml'.format(basename)) as f:
+            self._data = yaml.load(f)
+
+    def x(self, name):
+        """
+        Get an independent variable ("x" data) with the given name.
+
+        """
+        for x in self._data['independent_variables']:
+            if x['header']['name'].startswith(name):
+                return x['values']
+
+    def y(self, name=None, **quals):
+        """
+        Get a dependent variable ("y" data) with the given name and qualifiers.
+
+        """
+        for y in self._data['dependent_variables']:
+            if name is None or y['header']['name'].startswith(name):
+                y_quals = {q['name']: q['value'] for q in y['qualifiers']}
+                if all(y_quals[k].startswith(v) for k, v in quals.items()):
+                    return y['values']
+
+    def cent(self):
+        """
+        Return a dictionary containing the centrality bins as a 2D int array
+        and the midpoints (x values) as a 1D float array.
+
+        """
+        if self._cent is None:
+            cent = [
+                tuple(int(v[k]) for k in ['low', 'high'])
+                for v in self.x('CENTRALITY')
+            ]
+            self._cent = dict(
+                cent=cent,
+                x=np.array([(a + b)/2 for a, b in cent])
+            )
+
+        return self._cent
+
+    def id_parts_data(self, combine_func):
+        """
+        Get identified particle data using the given `combine_func` to combine
+        particle-antiparticle datasets (i.e. `np.sum` or `np.mean`).
+
+        """
+        data = {}
+
+        for key, re_products in [
+            ('pion', ['PI+', 'PI-']),
+            ('kaon', ['K+', 'K-']),
+            ('proton', ['P', 'PBAR']),
+        ]:
+            y, yerr = combine_func([
+                [(v['value'], v['errors'][0]['symerror']) for v in values]
+                for values in [
+                        self.y(RE='PB PB --> {} X'.format(i))
+                        for i in re_products
+                ]
+            ], axis=0).T
+
+            data[key] = dict(y=y, yerr=yerr, **self.cent())
+
+        return data
+
+
+data = {}
+
+
+def run(f):
+    data.update(f())
+    return f
+
+
+@run
+def yields():
+    data = YAMLData('yields')
+
+    def nch_data():
+        for i in data.x('DNch/DETARAP'):
+            v = i['value']
+            if isinstance(v, str):
+                yield v.split(' +- ')
+            else:
+                yield v, (i['high'] - i['low'])/2
+
+    y, yerr = np.array(list(nch_data()), dtype=float).T
+
+    return dict(
+        dNch_deta=dict(y=y, yerr=yerr, **data.cent()),
+        dN_dy=data.id_parts_data(np.sum)
+    )
+
+
+@run
+def mean_pT():
+    return dict(mean_pT=YAMLData('mean_pT').id_parts_data(np.mean))
+
+
+@run
+def vn():
+    v2data = YAMLData('v2')
+    v3v4data = YAMLData('v3v4')
+
+    vn = {}
+
+    for n, data in enumerate([v2data, v3v4data, v3v4data], start=2):
+        def y_stat_sys_err():
+            for v in data.y('V{}{{2'.format(n)):
+                err = {e['label']: e['symerror'] for e in v['errors']}
+                yield v['value'], err['stat'], err['sys']
+
+        y, stat, sys = np.array(list(y_stat_sys_err())).T
+
+        vn[n] = dict(y=y, yerr=dict(stat=stat, sys=sys), **data.cent())
+
+    return dict(vn=vn)
+
+
+def print_data(d, indent=0):
+    """
+    Pretty print a nested dictionary.
+
+    """
+    prefix = indent * '  '
+    for k in sorted(d):
+        v = d[k]
+        k = prefix + str(k)
+        if isinstance(v, dict):
+            print(k)
+            print_data(v, indent + 1)
+        else:
+            print(k, '=', str(v).replace('\n', ''))
+
+
+def main():
+    print_data(data)
+    with open('data.pkl', 'wb') as f:
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+if __name__ == "__main__":
+    main()
