@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import pickle
+import subprocess
+
+
+def generate_design(npoints, ndim, ranges=None, seed=np.random.randint(2**30)):
+    """
+    Generate a maximin LHS design.
+
+    """
+    # use R lhs library
+    output = subprocess.check_output(
+        ['R', '--slave'],
+        input="""
+        library('lhs')
+        set.seed({})
+        write.table(maximinLHS({}, {}), col.names=FALSE, row.names=FALSE)
+        """.format(seed, npoints, ndim).encode(),
+    )
+
+    lhs = np.array([l.split() for l in output.splitlines()], dtype=float)
+
+    if ranges is None:
+        return lhs
+
+    # rescale hypercube to requested range
+    dmin, dmax = np.asarray(ranges).T
+
+    return lhs*(dmax - dmin) + dmin
+
+
+def main():
+    # design parameters
+    labels, ranges = map(list, zip(*[
+        ('norm',       (  15.0,   25.0)),
+        ('p',          (   -0.5,   0.5)),
+        ('fluct_std',  (   1e-6,   1.5)),
+        ('w_inv',      (1/0.25, 1/0.75)),
+        ('dmin3',      (   0.0, 1.7**3)),
+        ('tau_fs',     ( 0.001,    1.0)),
+        ('etas_hrg',   (   0.1,    0.5)),
+        ('etas_min',   (   0.0,    0.3)),
+        ('etas_slope', (   0.0,    3.0)),
+        ('etas_curv',  (  -1.0,    1.0)),
+        ('zetas_norm', (   0.0,    2.0)),
+        ('Tswitch',    (  0.13,   0.16)),
+    ]))
+
+    # create dict of main and validation designs
+    design = generate_design(
+        npoints=200, ndim=len(labels),ranges=ranges,
+        seed=1052175364
+    )
+
+    # write pickle file
+    with open('design.pkl', 'wb') as f:
+        pickle.dump(
+            dict(design=design, labels=labels, ranges=ranges),
+            f, protocol=pickle.HIGHEST_PROTOCOL
+        )
+
+    # write OSG input files
+    template = ''.join(
+        '{} = {}\n'.format(key, ' '.join(args)) for (key, *args) in
+        [[
+            'trento_args',
+            '--normalization {norm}',
+            '--reduced-thickness {p}',
+            '--fluctuation {k}',
+            '--nucleon-width {w}',
+            '--nucleon-min-dist {d}',
+        ], [
+            'tau_fs', '{tau_fs}'
+        ], [
+            'vishnew_args',
+            'etas_hrg={etas_hrg}',
+            'etas_min={etas_min}',
+            'etas_slope={etas_slope}',
+            'etas_curv={etas_curv}',
+            'visbulknorm={zetas_norm}',
+        ], [
+            'Tswitch', '{Tswitch}'
+        ]]
+    )
+
+    ndigits = int(np.log10(design.shape[0]) + 1)
+    file_fmt = 'inputs/{:0' + str(ndigits) + 'd}'
+
+    print('#', *labels)
+    for n, row in enumerate(design):
+        print(*row)
+        kwargs = dict(zip(labels, row))
+        kwargs.update(
+            k=1/kwargs.pop('fluct_std')**2,
+            w=1/kwargs.pop('w_inv'),
+            d=kwargs.pop('dmin3')**(1/3)
+        )
+        with open(file_fmt.format(n), 'w') as f:
+            f.write(template.format(**kwargs))
+
+
+if __name__ == "__main__":
+    main()
