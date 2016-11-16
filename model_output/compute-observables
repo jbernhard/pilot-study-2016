@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import pickle
+import os.path
+import sys
+from hic import flow
+
+
+def main():
+    if len(sys.argv) < 2:
+        print('usage: {} event_files... output_file'.format(sys.argv[0]))
+        return
+
+    *event_files, output_file = sys.argv[1:]
+
+    if os.path.exists(output_file):
+        if input(
+                'output file {} exists, overwrite? [y/N] '
+                .format(output_file)
+        ).lower() != 'y':
+            return
+
+    species_dtype = [(s, float) for s in ['pion', 'kaon', 'proton']]
+
+    dtype = np.dtype([
+        ('initial_entropy', float),
+        ('mult_factor', float),
+        ('dNch_deta', float),
+        ('dN_dy', species_dtype),
+        ('mean_pT', species_dtype),
+        ('M', int),
+        ('Qn', complex, 6),
+    ])
+
+    def load_event_data(f):
+        print('reading', f, end='\r')
+        d = np.fromfile(f, dtype=dtype)
+        d.sort(order='dNch_deta')
+        return d
+
+    event_data = [load_event_data(f) for f in event_files]
+    print()
+
+    def observables_like(expt, *keys):
+        """
+        Compute the same centrality-binned observables as contained in `expt`
+        with the same nested dict structure.
+
+        This function calls itself recursively, each time prepending to `keys`.
+
+        """
+        try:
+            x = expt['x']
+            cent = expt['cent']
+        except KeyError:
+            return {
+                k: observables_like(v, k, *keys)
+                for k, v in expt.items()
+            }
+
+        def _compute_bin():
+            """
+            Choose a function to compute the current observable for a single
+            centrality bin.
+
+            """
+            obs_stack = list(keys)
+            obs = obs_stack.pop()
+
+            if obs == 'dNch_deta':
+                return lambda events: events[obs].mean()
+
+            if obs == 'dN_dy':
+                species = obs_stack.pop()
+                return lambda events: events[obs][species].mean()
+
+            if obs == 'mean_pT':
+                species = obs_stack.pop()
+                return lambda events: np.average(
+                    events[obs][species],
+                    weights=events['dN_dy'][species]
+                )
+
+            if obs == 'vn':
+                n = obs_stack.pop()
+                return lambda events: flow.Cumulant(
+                    events['M'], *events['Qn'].T[1:]
+                ).flow(n, 2)
+
+        compute_bin = _compute_bin()
+
+        def compute_all_bins(events):
+            n = events.size
+            bins = [
+                events[int((1 - b/100)*n):int((1 - a/100)*n)]
+                for a, b in cent
+            ]
+
+            return list(map(compute_bin, bins))
+
+        return dict(
+            x=x, cent=cent,
+            Y=np.array(list(map(compute_all_bins, event_data)))
+        )
+
+    with open('../expt/data.pkl', 'rb') as f:
+        expt = pickle.load(f)
+
+    print('computing observables')
+    observables = observables_like(expt)
+
+    print('writing', output_file)
+    with open(output_file, 'wb') as f:
+        pickle.dump(observables, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+if __name__ == "__main__":
+    main()

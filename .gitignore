@@ -1,2 +1,3 @@
 design/inputs/
+model_output/events/
 *.pkl
