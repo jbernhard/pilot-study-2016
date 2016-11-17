@@ -1,3 +1,4 @@
 design/inputs/
 model_output/events/
+*.hdf
 *.pkl

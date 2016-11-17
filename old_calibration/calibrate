@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+
+import argparse
+import itertools
+import pickle
+
+import numpy as np
+import h5py
+import mtd
+
+
+# keys, number of centrality bins
+observables = [
+    (['dN_dy', 'pion'],     8),
+    (['dN_dy', 'kaon'],     8),
+    (['dN_dy', 'proton'],   8),
+    # (['dNch_deta'],         8),
+    (['mean_pT', 'pion'],   8),
+    (['mean_pT', 'kaon'],   8),
+    (['mean_pT', 'proton'], 8),
+    (['vn', 2],             8),
+    (['vn', 3],             6),
+    (['vn', 4],             6),
+]
+
+
+def load_pickle(fn):
+    with open(fn, 'rb') as f:
+        return pickle.load(f)
+
+
+def get(mapping, *keys):
+    value = mapping
+    for k in keys:
+        value = value[k]
+    return value
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='train emulator and calibrate to expmerimental data',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    parser.add_argument(
+        '--nstarts', type=int, default=10,
+        help='number of random starts for MLE training'
+    )
+    parser.add_argument(
+        '--nwalkers', type=int, default=100,
+        help='number of MCMC walkers'
+    )
+    parser.add_argument(
+        '--nsteps', type=int, default=10000,
+        help='number of MCMC steps'
+    )
+    parser.add_argument(
+        '--nburnsteps', type=int, default=1000,
+        help='number of MCMC burn-in steps'
+    )
+    parser.add_argument(
+        '--yerr', type=float, default=0.10,
+        help='percent error on experimental data'
+    )
+
+    parser.add_argument(
+        '--model-obs', help='model observables file',
+        default='../model_output/observables.pkl'
+    )
+    parser.add_argument(
+        '--design', help='design file',
+        default='../design/design.pkl'
+    )
+    parser.add_argument(
+        '--expt', help='experimental data file',
+        default='../expt/data.pkl'
+    )
+
+    parser.add_argument('output', help='output HDF5 file')
+
+    args = parser.parse_args()
+
+    print('loading data')
+
+    # load data into big array
+    model_obs = load_pickle(args.model_obs)
+    training_data = np.hstack([
+        get(model_obs, *k)['Y'][:, :n] for k, n in observables
+    ])
+    nsamples, nfeatures = training_data.shape
+
+    expt = load_pickle(args.expt)
+    expt_data = np.hstack([
+        get(expt, *k)['y'][:n] for k, n in observables
+    ])
+
+    design = load_pickle(args.design)['design']
+    ndim = design.shape[1]
+
+    # GP kernel: squared-exponential with noise
+    # ExpSquaredKernel pars are the _squares_ of the length scales
+    kernel = (
+        1. *
+        mtd.kernels.ExpSquaredKernel(np.full(ndim, .5), ndim=ndim) +
+        mtd.kernels.WhiteKernel(1e-8, ndim=ndim)
+    )
+
+    # prior for kernel hyperparameters
+    # used to sample random starting points for MLE training
+    prior = (
+        mtd.priors.InvGammaPrior() +
+        mtd.priors.LogPrior(low=.5**2, high=3.**2) * ndim +
+        mtd.priors.LogPrior(low=.001, high=1.)
+    )
+
+    # hyperparameter boundaries [on log of pars]
+    bounds = (
+        [(None, None)] +
+        [2.*np.log((.3, 10.))] * ndim +  # sane range for length scales
+        [(None, None)]
+    )
+
+    print('starting GPs')
+
+    normalized_training_data = training_data / expt_data
+    normalized_expt_data = np.ones_like(expt_data)
+    npc = 8
+
+    mgp = mtd.MultiGP(design, normalized_training_data, kernel, npc=npc)
+    print('{} PCs explain {:g} of variance'.format(
+        npc, mgp.pca.weights[:npc].sum()))
+
+    mgp.train(prior, nstarts=args.nstarts, verbose=True, bounds=bounds)
+
+    mgp.calibrate(
+        normalized_expt_data, yerr=args.yerr,
+        nwalkers=args.nwalkers, nsteps=args.nsteps, nburnsteps=args.nburnsteps,
+        verbose=True
+    )
+
+    print('saving results')
+
+    # generator to unpack data back into observables
+    def unpack(samples):
+        endpoints = list(itertools.accumulate(n for _, n in observables))
+        slices = [slice(i, j) for (i, j) in zip([0] + endpoints, endpoints)]
+        samples *= expt_data
+        for (keys, _), s in zip(observables, slices):
+            yield '/'.join(map(str, keys)), samples[:, s]
+
+    with h5py.File(args.output, 'w') as f:
+        f.create_dataset('chain', data=mgp.cal_flatchain, compression='lzf')
+
+        g = f.create_group('samples')
+
+        for name, data in unpack(mgp.cal_samples):
+            g.create_dataset(name, data=data, compression='lzf')
+
+
+if __name__ == "__main__":
+    main()
