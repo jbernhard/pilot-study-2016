@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+
+import pickle
+import sys
+
+import numpy as np
+import h5py
+import matplotlib.pyplot as plt
+from matplotlib import ticker
+
+
+fontsmall, fontnormal, fontlarge = 5, 6, 7
+offblack = '#262626'
+aspect = 1/1.618
+resolution = 72.27
+textwidth = 307.28987/resolution
+textheight = 261.39864/resolution
+fullwidth = 350/resolution
+fullheight = 270/resolution
+
+plt.rcdefaults()
+plt.rcParams.update({
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['Lato'],
+    'mathtext.fontset': 'custom',
+    'mathtext.default': 'it',
+    'mathtext.rm': 'sans',
+    'mathtext.it': 'sans:italic:medium',
+    'mathtext.cal': 'sans',
+    'font.size': fontnormal,
+    'legend.fontsize': fontnormal,
+    'axes.labelsize': fontnormal,
+    'axes.titlesize': fontlarge,
+    'xtick.labelsize': fontsmall,
+    'ytick.labelsize': fontsmall,
+    'font.weight': 400,
+    'axes.labelweight': 400,
+    'axes.titleweight': 400,
+    'lines.linewidth': .7,
+    'lines.markersize': 3,
+    'lines.markeredgewidth': 0,
+    'patch.linewidth': .7,
+    'axes.linewidth': .4,
+    'xtick.major.width': .4,
+    'ytick.major.width': .4,
+    'xtick.minor.width': .4,
+    'ytick.minor.width': .4,
+    'xtick.major.size': 1.2,
+    'ytick.major.size': 1.2,
+    'xtick.minor.size': .8,
+    'ytick.minor.size': .8,
+    'xtick.major.pad': 1.5,
+    'ytick.major.pad': 1.5,
+    'axes.labelpad': 3,
+    'text.color': offblack,
+    'axes.edgecolor': offblack,
+    'axes.labelcolor': offblack,
+    'xtick.color': offblack,
+    'ytick.color': offblack,
+    'legend.numpoints': 1,
+    'legend.scatterpoints': 1,
+    'legend.frameon': False,
+    'image.interpolation': 'none',
+    'pdf.fonttype': 42
+})
+
+
+plot_functions = {}
+
+
+def plot(f):
+    """
+    Plot function decorator.  Calls the function, does several generic tasks,
+    and saves the figure as the function name.
+
+    """
+    def wrapper(*args, **kwargs):
+        print(f.__name__)
+        f(*args, **kwargs)
+
+        fig = plt.gcf()
+
+        if getattr(fig, 'despine', True):
+            despine(*fig.axes)
+
+        if not fig.get_tight_layout():
+            tight(fig)
+
+        fig.savefig('{}.pdf'.format(f.__name__))
+        plt.close(fig)
+
+    plot_functions[f.__name__] = wrapper
+
+    return wrapper
+
+
+def despine(*axes):
+    """
+    Remove the top and right spines.
+
+    """
+    if not axes:
+        axes = plt.gcf().axes
+
+    for ax in axes:
+        for spine in ['top', 'right']:
+            ax.spines[spine].set_visible(False)
+        for xy, pos in [('x', 'bottom'), ('y', 'left')]:
+            axis = getattr(ax, xy + 'axis')
+            if axis.get_ticks_position() == 'default':
+                axis.set_ticks_position(pos)
+
+
+def tight(fig=None, **kwargs):
+    """
+    Set tight_layout with a better default pad.
+
+    """
+    if fig is None:
+        fig = plt.gcf()
+
+    kwargs.setdefault('pad', .1)
+    fig.set_tight_layout(kwargs)
+
+
+def remove_ticks(*axes):
+    """
+    Remove all tick marks (but not labels).
+
+    """
+    if not axes:
+        axes = plt.gcf().axes
+
+    for ax in axes:
+        ax.xaxis.set_ticks_position('none')
+        ax.yaxis.set_ticks_position('none')
+
+
+def auto_ticks(
+        ax, xy=None, nbins=5, steps=[1, 2, 4, 5, 10],
+        prune=None, minor=0
+):
+    """
+    Convenient interface to matplotlib.ticker locators.
+
+    """
+    if xy == 'x':
+        axes = ax.xaxis,
+    elif xy == 'y':
+        axes = ax.yaxis,
+    else:
+        axes = ax.xaxis, ax.yaxis
+
+    for axis in axes:
+        axis.set_major_locator(
+            ticker.MaxNLocator(nbins=nbins, steps=steps, prune=prune)
+        )
+        if minor:
+            axis.set_minor_locator(ticker.AutoMinorLocator(minor))
+
+
+data_files = dict(
+    design='../design/design.pkl',
+    expt='../expt/data.pkl',
+    model_output='../model_output/observables.pkl',
+)
+
+data_cache = dict()
+
+
+def load_data(name):
+    """
+    Load a data file, pulling from the cache if already read.
+
+    """
+    if name not in data_cache:
+        with open(data_files[name], 'rb') as f:
+            data_cache[name] = pickle.load(f)
+
+    return data_cache[name]
+
+
+def get_keys(obj, *keys):
+    r = obj
+    for k in keys:
+        if k is not None:
+            r = r[k]
+
+    return r
+
+
+def _observables(posterior=False):
+    """
+    The observables at all design points or at posterior samples, along with
+    experimental data.
+
+    """
+    id_parts = [
+        ('pion',   r'$\pi^\pm$', 'Blues'),
+        ('kaon',   r'$K^\pm$', 'Greens'),
+        ('proton', r'$p\bar p$', 'Reds')
+    ]
+
+    flows = [
+        (n, '$v_{}$'.format(n), c)
+        for n, c in enumerate(['GnBu', 'Purples', 'Oranges'], start=2)
+    ]
+
+    plots = [
+        ('dN_dy', 'Identified particle yields', r'$dN/dy$', (.1, 3e3),
+         id_parts),
+        ('mean_pT', 'Identified particle mean $p_T$',
+         r'$p_T$ [GeV]', (0, 2.), id_parts),
+        ('vn', 'Flow cumulants', r'$v_n\{2\}$', (0, 0.15), flows),
+    ]
+
+    expt = load_data('expt')
+    model = load_data('model_output')
+
+    if posterior:
+        samples = {}
+        with h5py.File('../old_calibration/results.hdf', 'r') as f:
+            indices = np.random.randint(0, f['chain'].shape[0], size=100)
+            for obs, *_, subplots in plots:
+                samples[obs] = {}
+                for subobs, *_ in subplots:
+                    dset = f['samples'][obs][str(subobs)]
+                    samples[obs][subobs] = dict(
+                        x=model[obs][subobs]['x'][:dset.shape[1]],
+                        Y=np.array([dset[i] for i in indices])
+                    )
+        model = samples
+
+    fig, axes = plt.subplots(
+        ncols=len(plots),
+        figsize=(fullwidth, .33*fullwidth)
+    )
+
+    for (obs, title, ylabel, ylim, subplots), ax in zip(plots, axes):
+        for subobs, label, cmap in subplots:
+            color = getattr(plt.cm, cmap)(.6)
+
+            x = model[obs][subobs]['x']
+            Y = model[obs][subobs]['Y']
+
+            for y in Y:
+                ax.plot(x, y, color=color, alpha=.1, lw=.3)
+
+            x = expt[obs][subobs]['x']
+            y = expt[obs][subobs]['y']
+            yerr = expt[obs][subobs]['yerr']
+            if isinstance(yerr, dict):
+                yerr = yerr['sys']
+
+            ax.errorbar(
+                x, y, yerr=yerr, fmt='o', ms=1.8,
+                capsize=0, color='.25', zorder=1000
+            )
+
+        if obs.startswith('dN'):
+            ax.set_yscale('log')
+            ax.minorticks_off()
+        else:
+            auto_ticks(ax, 'y', nbins=4, minor=2)
+
+        ax.set_xlabel('Centrality %')
+        ax.set_ylabel(ylabel)
+        ax.set_ylim(ylim)
+        ax.set_title(title)
+
+    tight(fig, w_pad=-.2)
+
+
+@plot
+def observables_design():
+    _observables(posterior=False)
+
+
+@plot
+def observables_samples():
+    _observables(posterior=True)
+
+
+@plot
+def posterior():
+    design_dict = load_data('design')
+    labels = design_dict['labels']
+    ranges = design_dict['ranges']
+
+    with h5py.File('../old_calibration/results.hdf', 'r') as f:
+        chain = np.array(f['chain']).T
+
+    i = labels.index('w_inv')
+    ranges[i] = tuple(1/x for x in ranges[i])
+    np.reciprocal(chain[i], out=chain[i])
+    labels[i] = 'w'
+
+    i = labels.index('dmin3')
+    ranges[i] = tuple(x**(1/3) for x in ranges[i])
+    chain[i] **= 1/3
+    labels[i] = 'dmin'
+
+    i = labels.index('tau_fs')
+    ranges[i] = (0., ranges[i][1])
+
+    nxy = chain.shape[0]
+    assert nxy == len(labels)
+
+    cmap = plt.cm.Blues
+    line_color = cmap(.8)
+    fill_color = cmap(.5, alpha=.1)
+
+    fig, axes = plt.subplots(
+        nrows=nxy, ncols=nxy,
+        sharex='col', sharey='row',
+        figsize=(fullheight, fullheight)
+    )
+
+    for n, (ax, c, lim) in enumerate(zip(axes.diagonal(), chain, ranges)):
+        counts, edges = np.histogram(c, bins=100, range=lim)
+        x = (edges[1:] + edges[:-1]) / 2
+        y = .84 * (lim[1] - lim[0]) * counts / counts.max() + lim[0]
+        ax.plot(x, y, lw=.6, color=line_color)
+        ax.fill_between(x, lim[0], y, color=fill_color, zorder=-10)
+
+        ax.set_xlim(lim)
+        ax.set_ylim(lim)
+
+        ticks = [lim[0], (lim[0] + lim[1])/2, lim[1]]
+        ax.set_xticks(ticks)
+        ax.set_yticks(ticks)
+
+    for ny, nx in zip(*np.tril_indices_from(axes, k=-1)):
+        H, xedges, yedges = np.histogram2d(
+            chain[nx], chain[ny], bins=100, range=(ranges[nx], ranges[ny])
+        )
+        H[H == 0] = None
+        axes[ny][nx].pcolorfast(xedges, yedges, H.T, cmap=cmap)
+
+        axes[nx][ny].set_axis_off()
+
+    for n, label in enumerate(labels):
+        for ax, xy in [(axes[-1, n], 'x'), (axes[n, 0], 'y')]:
+            getattr(ax, 'set_{}label'.format(xy))(
+                label, fontdict=dict(size=3.5)
+            )
+            ticklabels = getattr(ax, 'get_{}ticklabels'.format(xy))()
+            for t in ticklabels:
+                t.set_fontsize(2.5)
+            if xy == 'x':
+                ticklabels[0].set_horizontalalignment('left')
+                ticklabels[-1].set_horizontalalignment('right')
+            else:
+                ticklabels[0].set_verticalalignment('bottom')
+                ticklabels[-1].set_verticalalignment('top')
+
+
+def main():
+    if len(sys.argv) == 1:
+        for f in plot_functions.values():
+            f()
+    else:
+        for a in sys.argv[1:]:
+            if a.endswith('.pdf'):
+                a = a[:-4]
+            if a in plot_functions:
+                plot_functions[a]()
+            else:
+                print('unknown plot:', a)
+
+
+if __name__ == "__main__":
+    main()
