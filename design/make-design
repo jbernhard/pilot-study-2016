@@ -48,16 +48,25 @@ def main():
         ('Tswitch',    (  0.13,   0.16)),
     ]))
 
-    # create dict of main and validation designs
-    design = generate_design(
-        npoints=200, ndim=len(labels),ranges=ranges,
-        seed=1052175364
-    )
+    # second set of ranges with extended norm
+    ranges_mod = ranges.copy()
+    ranges_mod[0] = (5.0, ranges[0][0])
+
+    # ranges with full norm
+    ranges_full = ranges.copy()
+    ranges_full[0] = (ranges_mod[0][0], ranges[0][1])
+
+    # create design array as a concatenation of two designs for each of the
+    # adjacent norm ranges
+    design = np.concatenate([
+        generate_design(npoints=200, ndim=len(labels), ranges=r, seed=s)
+        for r, s in [(ranges, 1052175364), (ranges_mod, 534390128)]
+    ])
 
     # write pickle file
     with open('design.pkl', 'wb') as f:
         pickle.dump(
-            dict(design=design, labels=labels, ranges=ranges),
+            dict(design=design, labels=labels, ranges=ranges_full),
             f, protocol=pickle.HIGHEST_PROTOCOL
         )
 
