@@ -11,14 +11,14 @@ import mtd
 
 # keys, number of centrality bins
 observables = [
-    (['dN_dy', 'pion'],     8),
-    (['dN_dy', 'kaon'],     8),
-    (['dN_dy', 'proton'],   8),
-    # (['dNch_deta'],         8),
-    (['mean_pT', 'pion'],   8),
-    (['mean_pT', 'kaon'],   8),
-    (['mean_pT', 'proton'], 8),
-    (['vn', 2],             8),
+    (['dN_dy', 'pion'],     9),
+    (['dN_dy', 'kaon'],     9),
+    (['dN_dy', 'proton'],   9),
+    # (['dNch_deta'],         9),
+    (['mean_pT', 'pion'],   9),
+    (['mean_pT', 'kaon'],   9),
+    (['mean_pT', 'proton'], 9),
+    (['vn', 2],             9),
     (['vn', 3],             6),
     (['vn', 4],             6),
 ]
