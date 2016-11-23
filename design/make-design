@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from collections import OrderedDict
+
 import numpy as np
 import pickle
 import subprocess
@@ -32,41 +34,40 @@ def generate_design(npoints, ndim, ranges=None, seed=np.random.randint(2**30)):
 
 
 def main():
-    # design parameters
-    labels, ranges = map(list, zip(*[
-        ('norm',       (  15.0,   25.0)),
-        ('p',          (   -0.5,   0.5)),
-        ('fluct_std',  (   1e-6,   1.5)),
-        ('w_inv',      (1/0.25, 1/0.75)),
-        ('dmin3',      (   0.0, 1.7**3)),
-        ('tau_fs',     ( 0.001,    1.0)),
-        ('etas_hrg',   (   0.1,    0.5)),
-        ('etas_min',   (   0.0,    0.3)),
-        ('etas_slope', (   0.0,    3.0)),
-        ('etas_curv',  (  -1.0,    1.0)),
-        ('zetas_norm', (   0.0,    2.0)),
-        ('Tswitch',    (  0.13,   0.16)),
-    ]))
-
-    # second set of ranges with extended norm
-    ranges_mod = ranges.copy()
-    ranges_mod[0] = (5.0, ranges[0][0])
-
-    # ranges with full norm
-    ranges_full = ranges.copy()
-    ranges_full[0] = (ranges_mod[0][0], ranges[0][1])
-
-    # create design array as a concatenation of two designs for each of the
-    # adjacent norm ranges
-    design = np.concatenate([
-        generate_design(npoints=200, ndim=len(labels), ranges=r, seed=s)
-        for r, s in [(ranges, 1052175364), (ranges_mod, 534390128)]
+    # design parameters and ranges
+    params = OrderedDict([
+        ('norm',        (   5.0,   25.0)),
+        ('p',           (  -0.5,    0.5)),
+        ('fluct_std',   (  1e-6,    2.0)),
+        ('w',           (   0.3,    1.0)),
+        ('dmin3',       (   0.0, 1.7**3)),
+        ('tau_fs',      (  1e-3,    1.0)),
+        ('etas_hrg',    (   0.1,    0.5)),
+        ('etas_min',    (   0.0,    0.3)),
+        ('etas_slope',  (   0.0,    3.0)),
+        ('etas_curv',   (  -1.0,    1.0)),
+        ('zetas_max',   (   0.0,    0.1)),
+        ('zetas_width', (  1e-4,   0.05)),
+        ('Tswitch',     (  0.13,   0.16)),
     ])
+
+    # create design array
+    design = generate_design(
+        npoints=20*len(params), ndim=len(params),
+        ranges=list(params.values()), seed=1052175364
+    )
+
+    # Some parameters have natural minimum == zero, but the design minimum must
+    # be a small epsilon to avoid division by zero.  Now that the design array
+    # is generated, replace those epsilons with actual zeroes.  Later, the GPs
+    # can extrapolate and posterior dists can be plotted down to zero.
+    for k in ['fluct_std', 'tau_fs', 'zetas_width']:
+        params[k] = (0., params[k][1])
 
     # write pickle file
     with open('design.pkl', 'wb') as f:
         pickle.dump(
-            dict(design=design, labels=labels, ranges=ranges_full),
+            dict(params=params, design=design),
             f, protocol=pickle.HIGHEST_PROTOCOL
         )
 
@@ -88,7 +89,8 @@ def main():
             'etas_min={etas_min}',
             'etas_slope={etas_slope}',
             'etas_curv={etas_curv}',
-            'visbulknorm={zetas_norm}',
+            'zetas_max={zetas_max}',
+            'zetas_width={zetas_width}',
         ], [
             'Tswitch', '{Tswitch}'
         ]]
@@ -97,13 +99,12 @@ def main():
     ndigits = int(np.log10(design.shape[0]) + 1)
     file_fmt = 'inputs/{:0' + str(ndigits) + 'd}'
 
-    print('#', *labels)
+    print('#', *params)
     for n, row in enumerate(design):
         print(*row)
-        kwargs = dict(zip(labels, row))
+        kwargs = dict(zip(params, row))
         kwargs.update(
             k=1/kwargs.pop('fluct_std')**2,
-            w=1/kwargs.pop('w_inv'),
             d=kwargs.pop('dmin3')**(1/3)
         )
         with open(file_fmt.format(n), 'w') as f:
